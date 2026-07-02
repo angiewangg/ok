@@ -5,6 +5,10 @@
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x87ceeb);
 
+  // physics constants
+  const GRAVITY = -600; // units per second^2 (y-up coordinate, negative pulls downward)
+  const PARACHUTE_TERMINAL = -30; // slow descent when parachute deployed
+
   const camera = new THREE.PerspectiveCamera(60, width/height, 0.1, 5000);
   camera.position.set(0, 120, 260);
   scene.add(camera);
@@ -92,7 +96,15 @@
 
   function startJump(){
     if(player.alive) return;
-    player.mesh = createPlayerMesh(); player.mesh.position.set(bus.position.x, bus.position.y-20, bus.position.z+40); scene.add(player.mesh); player.alive=true; player.v = new THREE.Vector3((Math.random()-0.5)*40, -80, 120); player.parachute=false; player.hp=100; player.shield=50;
+    player.mesh = createPlayerMesh();
+    // spawn slightly below bus so we visibly drop
+    player.mesh.position.set(bus.position.x, bus.position.y - 22, bus.position.z + 40);
+    scene.add(player.mesh);
+    player.alive = true;
+    player.v = new THREE.Vector3((Math.random()-0.5)*40, -60, 120); // initial horizontal and downward velocity
+    player.parachute = false;
+    player.landed = false;
+    player.hp = 100; player.shield = 50;
   }
 
   // schedule bots
@@ -114,10 +126,15 @@
         const m = createPlayerMesh(); m.scale.set(0.9,0.9,0.9); scene.add(m); b.mesh = m; b.state='inAir'; b.v = new THREE.Vector3((Math.random()-0.5)*40, -40, (Math.random()*40)+80); b.mesh.position.copy(b.pos);
       }
       if(b.state==='inAir' && b.mesh){
-        if(!b.parachute && b.v.y < -150) b.parachute=true;
-        if(b.parachute) b.v.y = Math.min(b.v.y + 30*dt, 220);
+        // apply gravity
+        if(!b.parachute){
+          b.v.y += GRAVITY * dt;
+        } else {
+          // parachute slows descent toward terminal parachute speed
+          b.v.y += (PARACHUTE_TERMINAL - b.v.y) * 0.12;
+        }
         b.mesh.position.addScaledVector(b.v, dt);
-        if(b.mesh.position.y <= 0){ b.mesh.position.y = 0; b.state='landed'; b.aiTimer=1+Math.random()*2; }
+        if(b.mesh.position.y <= 0){ b.mesh.position.y = 0; b.v.set(0,0,0); b.state='landed'; b.aiTimer=1+Math.random()*2; }
       }
       if(b.state==='landed' && b.mesh){
         // simple idle movement
@@ -127,10 +144,22 @@
 
     // player physics
     if(player.alive && player.mesh){
-      if(!player.parachute){ player.v.y += 400*dt; }
-      else { player.v.y = Math.min(player.v.y + 30*dt, 220); player.v.x *= 0.995; }
+      // apply gravity / parachute physics
+      if(!player.parachute){
+        player.v.y += GRAVITY * dt;
+      } else {
+        player.v.y += (PARACHUTE_TERMINAL - player.v.y) * 0.12;
+        // slightly damp horizontal motion when parachuting
+        player.v.x *= 0.995;
+        player.v.z *= 0.995;
+      }
       player.mesh.position.addScaledVector(player.v, dt);
-      if(player.mesh.position.y <= 0){ player.mesh.position.y = 0; player.parachute=false; }
+      if(player.mesh.position.y <= 0){
+        player.mesh.position.y = 0;
+        player.v.set(0,0,0);
+        player.parachute = false;
+        player.landed = true;
+      }
 
       // shooting spawns bullets forward from player
       if(shooting){ // spawn at rate
