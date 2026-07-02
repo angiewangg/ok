@@ -289,9 +289,9 @@ let last = performance.now(); function loop(t){ const dt=(t-last)/1000; last=t; 
 
 // Input: space to 'jump' (advance to drop state)
 window.addEventListener('keydown', e=>{
-  if(e.code==='Space' && state==='readyToJump'){
+  if(e.code==='Space' && (state==='readyToJump' || state==='boarding')){
     // create player at bus position and set initial jump velocity
-    player = {x: bus.x + bus.w/2, y: bus.y+bus.h+6, vx: (Math.random()-0.5)*60, vy: -60, r:12, h:36, hp:100, shield:50, ammo:30, weapon:'pistol', speed:160, fireCooldown:0, parachute:false, jumpTime:performance.now()};
+    player = {x: bus.x + bus.w/2, y: bus.y+bus.h+6, vx: (Math.random()-0.5)*60, vy: -60, r:12, h:36, hp:100, shield:50, ammo:30, weapon:'pistol', speed:160, fireCooldown:0, parachute:false, jumpTime:performance.now(), aiming:false};
     state = 'inAir'; statusEl.textContent = 'In Air'; promptEl.classList.add('hidden');
     matchStart = performance.now();
   }
