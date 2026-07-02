@@ -7,6 +7,7 @@
 
   const camera = new THREE.PerspectiveCamera(60, width/height, 0.1, 5000);
   camera.position.set(0, 120, 260);
+  scene.add(camera);
 
   const renderer = new THREE.WebGLRenderer({antialias:true});
   renderer.setSize(width, height);
@@ -24,13 +25,25 @@
   const ground = new THREE.Mesh(groundGeo, groundMat); ground.rotation.x = -Math.PI/2; ground.position.y = 0; scene.add(ground);
 
   // Battle bus (simple box)
+  // Battle bus (will use GLTF if available, fallback to box)
+  let bus = null;
   const busGeo = new THREE.BoxGeometry(120,40,40);
   const busMat = new THREE.MeshStandardMaterial({color:0x2b6cb0});
-  const bus = new THREE.Mesh(busGeo, busMat); bus.position.set(-600,140,-200); scene.add(bus);
+  bus = new THREE.Mesh(busGeo, busMat); bus.position.set(-600,140,-200); scene.add(bus);
+
+  // GLTF support (will replace primitives when files present)
+  let gltfLoader = null; let playerGLTF = null; let busGLTF = null;
+  if(THREE && THREE.GLTFLoader){
+    try{ gltfLoader = new THREE.GLTFLoader();
+      gltfLoader.load('assets/player.glb', (g)=>{ playerGLTF = g.scene; }, undefined, ()=>{});
+      gltfLoader.load('assets/bus.glb', (g)=>{ busGLTF = g.scene; if(bus){ scene.remove(bus); bus = busGLTF.clone(); bus.position.set(-600,140,-200); scene.add(bus); } }, undefined, ()=>{});
+    }catch(e){ /* loader not available */ }
+  }
 
   // Player model (simple)
   const player = {mesh:null, alive:false};
   function createPlayerMesh(){
+    if(playerGLTF) return playerGLTF.clone();
     const group = new THREE.Group();
     const body = new THREE.Mesh(new THREE.BoxGeometry(18,28,10), new THREE.MeshStandardMaterial({color:0x2f2f2f})); body.position.y=14; group.add(body);
     const head = new THREE.Mesh(new THREE.SphereGeometry(7,12,12), new THREE.MeshStandardMaterial({color:0xffdca8})); head.position.y=34; group.add(head);
@@ -52,9 +65,19 @@
   const bulletGeo = new THREE.CylinderGeometry(1.6,1.6,12,8);
   const bulletMat = new THREE.MeshStandardMaterial({color:0xbfc0c2,metalness:0.6,roughness:0.4});
 
-  // HUD overlay element
-  const overlay = document.createElement('div'); overlay.style.position='fixed'; overlay.style.left='0'; overlay.style.top='0'; overlay.style.width='100%'; overlay.style.height='100%'; overlay.style.pointerEvents='none'; document.body.appendChild(overlay);
-  const info = document.createElement('div'); info.style.position='absolute'; info.style.top='12px'; info.style.left='50%'; info.style.transform='translateX(-50%)'; info.style.color='#fff'; info.style.font='14px Segoe UI'; overlay.appendChild(info);
+  // 3D HUD: canvas texture mapped to a plane attached to the camera
+  const hudCanvas = document.createElement('canvas'); hudCanvas.width = 512; hudCanvas.height = 256;
+  const hudCtx = hudCanvas.getContext('2d');
+  const hudTexture = new THREE.CanvasTexture(hudCanvas);
+  hudTexture.minFilter = THREE.LinearFilter;
+  const hudMat = new THREE.MeshBasicMaterial({map: hudTexture, transparent:true});
+  const hudGeo = new THREE.PlaneGeometry(1.92, 0.96); // aspect ~512/256
+  const hudMesh = new THREE.Mesh(hudGeo, hudMat);
+  hudMesh.renderOrder = 999;
+  hudMesh.material.depthTest = false;
+  hudMesh.material.depthWrite = false;
+  hudMesh.position.set(0, -40, -110);
+  camera.add(hudMesh);
 
   // Input
   let aiming=false, shooting=false;
@@ -127,8 +150,25 @@
     // FOV smooth
     const desiredFov = aiming ? 40 : 60; camera.fov += (desiredFov - camera.fov) * 0.08; camera.updateProjectionMatrix();
 
+    // draw HUD onto canvas texture
+    hudCtx.clearRect(0,0,hudCanvas.width,hudCanvas.height);
+    // background (transparent)
+    // HP bar
+    hudCtx.fillStyle = 'rgba(0,0,0,0.6)'; hudCtx.fillRect(12,12,260,36);
+    const hp = player.alive ? player.hp : 0;
+    hudCtx.fillStyle = '#e53935'; hudCtx.fillRect(16,16, (hp/100)*252,28);
+    hudCtx.fillStyle = '#ffffff'; hudCtx.font = '18px Segoe UI'; hudCtx.fillText(`HP: ${hp}`, 20, 40);
+    // minimap
+    const mmSize = 120; const mmX = hudCanvas.width - mmSize - 12; const mmY = 12;
+    hudCtx.fillStyle = 'rgba(0,0,0,0.6)'; hudCtx.fillRect(mmX, mmY, mmSize, mmSize);
+    hudCtx.fillStyle = '#9aa0a6'; hudCtx.fillRect(mmX+4, mmY+4, mmSize-8, mmSize-8);
+    // draw player/bots on minimap
+    function worldToMinimap(pos){ const worldSize=3000; const mx = ((pos.x + worldSize/2)/worldSize)*(mmSize-8); const mz = ((pos.z + worldSize/2)/worldSize)*(mmSize-8); return {x: mmX+4+mx, y: mmY+4+mz}; }
+    if(player.alive && player.mesh){ const p = worldToMinimap(player.mesh.position); hudCtx.fillStyle='#00ff00'; hudCtx.fillRect(p.x-3,p.y-3,6,6); }
+    for(const b of bots){ if(b.state!=='scheduled' && b.mesh){ const p = worldToMinimap(b.mesh.position); hudCtx.fillStyle='#ff0000'; hudCtx.fillRect(p.x-2,p.y-2,4,4); } }
+    hudTexture.needsUpdate = true;
+
     renderer.render(scene, camera);
-    info.textContent = `HP: ${player.alive?player.hp:0}  Bots: ${bots.filter(b=>b.state!=='scheduled').length}`;
     requestAnimationFrame(animate);
   }
   animate();
