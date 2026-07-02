@@ -33,6 +33,15 @@ const bullets = [];
 const enemies = [];
 const loot = [];
 
+// Scheduled bot drops (simulate other players boarding and dropping)
+function scheduleBots(count){
+  const start = performance.now() + 2000;
+  for(let i=0;i<count;i++){
+    const delay = start + i*3000 + Math.random()*5000;
+    enemies.push({state:'scheduled', spawnTime:delay, x:Math.random()*canvas.width, y:-60, r:12, hp:120, spd:60, fireCooldown:1.5, alive:true, isBot:true});
+  }
+}
+
 // Safe zone
 const safe = {x:canvas.width/2,y:canvas.height/2,r:Math.min(canvas.width,canvas.height)*0.45,shrinkTime:30,shrinkStart:performance.now()+20000,shrinkRate:0.6};
 
@@ -85,6 +94,8 @@ function spawnWeapon(x,y,weapon){loot.push({x,y,type:'weapon',weapon});}
 // Initialize some loot and enemies on the map after landing
 function populateMap(){
   for(let i=0;i<10;i++) spawnLoot(Math.random()*canvas.width, groundY()-20 - Math.random()*120);
+  // schedule bot drops instead of immediate enemies
+  scheduleBots(8);
   for(let i=0;i<6;i++) spawnEnemy(Math.random()*canvas.width, groundY()-20 - Math.random()*200);
   // weapon crates
   for(let i=0;i<4;i++){ const x=Math.random()*canvas.width, y=groundY()-20 - Math.random()*120; spawnWeapon(x,y, i%2? 'rifle':'pistol') }
@@ -119,6 +130,18 @@ function update(dt){
       player.vx *= 0.98;
     }
     player.x += player.vx * dt; player.y += player.vy * dt;
+
+      // Process scheduled bot drops
+      for(const b of enemies){
+        if(b.state==='scheduled' && nowMs >= b.spawnTime){ b.state='inAir'; b.x = Math.random()*canvas.width; b.y = -40; b.vx = (Math.random()-0.5)*80; b.vy = 40 + Math.random()*40; b.parachute=false; }
+        if(b.state==='inAir'){
+          // parachute opens after falling
+          if(!b.parachute && b.vy>160) b.parachute = true;
+          if(b.parachute){ b.vy = clamp(b.vy + 30*dt, -200, 220); b.vx *= 0.995 }
+          b.x += b.vx * dt; b.y += b.vy * dt;
+          if(b.y >= groundY() - b.r){ b.y = groundY() - b.r; b.state='landed'; b.aiState='search'; }
+        }
+      }
     // ground collision
     if(player.y >= groundY() - player.h/2){player.y = groundY() - player.h/2; state='landing'; statusEl.textContent='Landed'; setTimeout(()=>{state='playing'; statusEl.textContent='Playing'; promptEl.classList.add('hidden'); populateMap();}, 600)}
   }
@@ -146,7 +169,7 @@ function update(dt){
       }
       // shooting: left click or 'k' key
       const shooting = mouse.down || keys['k'];
-      if(shooting && player.fireCooldown<=0){ bullets.push({x:player.x,y:player.y,dx:Math.cos(aimAngle)*520,dy:Math.sin(aimAngle)*520,owner:'player',r:4}); player.fireCooldown= (player.weapon && WEAPONS[player.weapon])? (1/WEAPONS[player.weapon].fireRate) : 0.5; }
+      if(shooting && player.fireCooldown<=0){ const dir = aimAngle; bullets.push({x:player.x,y:player.y,dx:Math.cos(dir)*520,dy:Math.sin(dir)*520,owner:'player',r:3,dir}); player.fireCooldown= (player.weapon && WEAPONS[player.weapon])? (1/WEAPONS[player.weapon].fireRate) : 0.5; }
       player.fireCooldown = Math.max(0, player.fireCooldown - dt);
     }
 
@@ -154,14 +177,14 @@ function update(dt){
     for(let i=bullets.length-1;i>=0;i--){const b=bullets[i]; b.x += b.dx*dt; b.y += b.dy*dt; if(b.x< -50||b.x>canvas.width+50||b.y< -50||b.y>canvas.height+50) bullets.splice(i,1)}
 
     // Enemies behavior
-    for(let i=enemies.length-1;i>=0;i--){const e=enemies[i]; if(!e.alive) continue; const dx=player.x-e.x, dy=player.y-e.y; const dist=Math.hypot(dx,dy);
+    for(let i=enemies.length-1;i>=0;i--){const e=enemies[i]; if(!e.alive) continue; if(e.state && (e.state==='scheduled' || e.state==='inAir')) continue; const dx=player.x-e.x, dy=player.y-e.y; const dist=Math.hypot(dx,dy);
       // simple AI: approach, strafe, or retreat based on hp
       if(dist>220){ e.x += (dx/dist)*e.spd*dt; e.y += (dy/dist)*e.spd*dt }
       else if(dist<120){ // too close -> strafe away
         const ang = Math.atan2(dy,dx)+Math.PI/2; e.x += Math.cos(ang)*e.spd*0.8*dt; e.y += Math.sin(ang)*e.spd*0.8*dt;
       }
       // fire when in range
-      e.fireCooldown -= dt; if(e.fireCooldown<=0 && dist<420){ const ang=Math.atan2(player.y-e.y, player.x-e.x); bullets.push({x:e.x,y:e.y,dx:Math.cos(ang)*320,dy:Math.sin(ang)*320,owner:'enemy',r:4}); e.fireCooldown = 0.9 + Math.random()*1.6 }
+      e.fireCooldown -= dt; if(e.fireCooldown<=0 && dist<420){ const ang=Math.atan2(player.y-e.y, player.x-e.x); bullets.push({x:e.x,y:e.y,dx:Math.cos(ang)*320,dy:Math.sin(ang)*320,owner:'enemy',r:4,dir:ang}); e.fireCooldown = 0.9 + Math.random()*1.6 }
       // hit by player bullets
       for(let j=bullets.length-1;j>=0;j--){const b=bullets[j]; if(b.owner==='player'){const dd=(b.x-e.x)*(b.x-e.x)+(b.y-e.y)*(b.y-e.y); if(dd < (b.r+e.r)*(b.r+e.r)){e.hp-=40; bullets.splice(j,1); if(e.hp<=0){e.alive=false; enemies.splice(i,1); killFeed.unshift({text:'You eliminated an enemy',time:nowMs}); if(killFeed.length>6) killFeed.pop(); break}}}}
     }
@@ -233,11 +256,31 @@ function draw(){ ctx.clearRect(0,0,canvas.width,canvas.height);
     ctx.fillStyle='#2f2f2f'; ctx.beginPath(); ctx.arc(player.x,player.y,player.r,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#ffdca8'; ctx.beginPath(); ctx.arc(player.x,player.y-18,10,0,Math.PI*2); ctx.fill();
   }
 
-  // draw bullets
-  for(const b of bullets){ ctx.fillStyle = b.owner==='player' ? '#ffd166' : '#ff6b6b'; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2); ctx.fill(); }
+  // draw bullets as elongated projectiles
+  for(const b of bullets){ ctx.save(); ctx.translate(b.x,b.y); const angle = b.dir || Math.atan2(b.dy,b.dx); ctx.rotate(angle);
+      const len = 14; const w = 4; ctx.fillStyle = b.owner==='player' ? '#bfc0c2' : '#ff6b6b';
+      // simple 3D shading: gradient
+      const grad = ctx.createLinearGradient(-len/2,0,len/2,0); grad.addColorStop(0,'rgba(255,255,255,0.9)'); grad.addColorStop(0.5,ctx.fillStyle); grad.addColorStop(1,'rgba(0,0,0,0.6)'); ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.ellipse(0,0,len, w, 0, 0, Math.PI*2); ctx.fill();
+    ctx.restore(); }
 
-  // draw enemies
-  for(const e of enemies){ ctx.fillStyle='#ff6b6b'; ctx.fillRect(e.x-e.r,e.y-e.r,e.r*2,e.r*2); }
+  // draw enemies / bots as stylized icons (appear after scheduled drop)
+  for(const e of enemies){
+    if(e.state === 'scheduled') continue;
+    // pseudo-3D scale based on vertical position
+    const depthScale = 1 - ((e.y||0)/groundY())*0.18;
+    const ex = e.x, ey = e.y;
+    // shadow
+    ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(ex, groundY()+4, 14*depthScale, 6*depthScale, 0, 0, Math.PI*2); ctx.fill();
+    // body
+    ctx.save(); ctx.translate(ex,ey); ctx.scale(depthScale, depthScale);
+    ctx.fillStyle = e.isBot? '#7c5cff' : '#ff6b6b'; roundRect(ctx,-12,-12,24,24,6); ctx.fill();
+    // head
+    ctx.fillStyle='#ffdca8'; ctx.beginPath(); ctx.arc(0,-14,8,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+    // parachute for bots in air
+    if(e.state === 'inAir' && e.parachute){ ctx.fillStyle='#ff9ab8'; ctx.beginPath(); ctx.ellipse(e.x, e.y-22, 48,18,0,Math.PI,0); ctx.fill(); ctx.fillStyle='#fff'; ctx.beginPath(); ctx.moveTo(e.x-18, e.y-2); ctx.lineTo(e.x, e.y-12); ctx.lineTo(e.x+18, e.y-2); ctx.fill(); }
+  }
 
   // draw loot
   for(const L of loot){ ctx.fillStyle='#f4d35e'; ctx.beginPath(); ctx.rect(L.x-6,L.y-6,12,12); ctx.fill(); }
@@ -275,7 +318,10 @@ function draw(){ ctx.clearRect(0,0,canvas.width,canvas.height);
   const hbW = 420, hbH = 64; const hbXc = canvas.width/2 - hbW/2, hbYc = canvas.height - hbH - 18; ctx.fillStyle='rgba(0,0,0,0.45)'; roundRect(ctx,hbXc,hbYc,hbW,hbH,12); ctx.fill();
   // slots
   const slots = 5; const slotW = 72; for(let s=0;s<slots;s++){ const sx = hbXc + 12 + s*(slotW+6); ctx.fillStyle='rgba(255,255,255,0.04)'; roundRect(ctx,sx,hbYc+8,slotW,48,8); ctx.fill(); if(player && s===0 && player.weapon){ // show equipped
-      ctx.strokeStyle='#ffd166'; ctx.lineWidth=2; roundRect(ctx,sx,hbYc+8,slotW,48,8); ctx.stroke(); ctx.fillStyle='#fff'; ctx.font='12px Segoe UI'; ctx.fillText(WEAPONS[player.weapon].name, sx+8, hbYc+30); ctx.fillText(`Ammo: ${player.ammo}`, sx+8, hbYc+44);
+     ctx.strokeStyle='#ffd166'; ctx.lineWidth=2; roundRect(ctx,sx,hbYc+8,slotW,48,8); ctx.stroke();
+     // draw stylized grey gun icon
+     const gx = sx+slotW/2, gy = hbYc+32; ctx.fillStyle='#9aa0a6'; roundRect(ctx,gx-22,gy-8,44,14,6); ctx.fill(); ctx.fillStyle='#6b7176'; roundRect(ctx,gx+12,gy-6,8,8,3); ctx.fill();
+     ctx.fillStyle='#fff'; ctx.font='11px Segoe UI'; ctx.fillText(`Ammo: ${player.ammo}`, sx+8, hbYc+44);
     } }
 
   // bottom-right: small info
