@@ -42,12 +42,33 @@ const killFeed = [];
 
 // Input
 const keys = {}; window.addEventListener('keydown',e=>keys[e.key.toLowerCase()]=true); window.addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
-const mouse = {x:0,y:0,down:false};
+const mouse = {x:0,y:0,down:false,right:false};
 canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top});
-canvas.addEventListener('mousedown',()=>mouse.down=true);canvas.addEventListener('mouseup',()=>mouse.down=false);
+canvas.addEventListener('mousedown',(e)=>{ if(e.button===0) mouse.down=true; if(e.button===2) mouse.right=true });
+canvas.addEventListener('mouseup',(e)=>{ if(e.button===0) mouse.down=false; if(e.button===2) mouse.right=false });
+canvas.addEventListener('contextmenu', e=>e.preventDefault());
+
+// keyboard: 'k' to shoot, Shift or right mouse for aim (zoom)
+window.addEventListener('keydown', e=>{ if(e.key.toLowerCase()==='k') keys['k']=true; if(e.key==='Shift') { if(player) player.aiming = true } });
+window.addEventListener('keyup', e=>{ if(e.key.toLowerCase()==='k') keys['k']=false; if(e.key==='Shift') { if(player) player.aiming = false } });
 
 // Helpers
 function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+
+// Normalize angle to [-PI, PI]
+function normalizeAngle(a){ while(a>Math.PI) a-=Math.PI*2; while(a<-Math.PI) a+=Math.PI*2; return a }
+
+// Convert screen coords to world coords based on camera/zoom
+let zoom = 1, targetZoom = 1;
+function screenToWorld(sx, sy){
+  if(!player) return {x: sx, y: sy};
+  const cx = player.x; const cy = player.y;
+  const wx = cx + (sx - canvas.width/2)/zoom;
+  const wy = cy + (sy - canvas.height/2)/zoom;
+  return {x: wx, y: wy};
+}
+
+function findNearestEnemyAngle(x,y,maxDist){ let best=null, bestD=Infinity; for(const e of enemies){ const d=Math.hypot(e.x-x,e.y-y); if(d<maxDist && d<bestD){ bestD=d; best=e; }} return best? Math.atan2(best.y-y,best.x-x) : null }
 
 // Spawn simple AI enemies
 function spawnEnemy(x,y){enemies.push({x,y,r:12,hp:60,spd:40,fireCooldown:Math.random()*2,alive:true})}
@@ -72,6 +93,8 @@ function populateMap(){
 // Update loop
 function update(dt){
   nowMs = performance.now();
+  // cap dt to avoid big jumps
+  dt = Math.min(dt, 0.05);
   // Boarding -> bus moves
   if(state==='boarding'){
     bus.x += bus.speed * dt;
@@ -107,8 +130,23 @@ function update(dt){
     if(player){
       if(mvx||mvy){const L=Math.hypot(mvx,mvy); mvx/=L; mvy/=L; player.x += mvx*player.speed*dt; player.y += mvy*player.speed*dt}
       player.x = clamp(player.x, 16, canvas.width-16); player.y = clamp(player.y, 16, groundY()-player.h/2);
-      // shooting
-      if(mouse.down && player.fireCooldown<=0){const ang=Math.atan2(mouse.y-player.y, mouse.x-player.x); bullets.push({x:player.x,y:player.y,dx:Math.cos(ang)*520,dy:Math.sin(ang)*520,owner:'player',r:4}); player.fireCooldown=0.25}
+      // Determine world mouse (account for zoom/camera)
+      const worldMouse = screenToWorld(mouse.x, mouse.y);
+      // aim assist: if aiming (right-click or shift), nudge aim toward nearest enemy
+      // ensure aiming state follows input
+      player.aiming = mouse.right || keys['shift'] || player.aiming;
+      let aimAngle = Math.atan2(worldMouse.y - player.y, worldMouse.x - player.x);
+      if(player.aiming){
+        const assist = findNearestEnemyAngle(player.x, player.y, 220);
+        if(assist !== null){
+          // blend angles slightly toward target
+          const diff = normalizeAngle(assist - aimAngle);
+          aimAngle += diff * 0.35; // assist strength
+        }
+      }
+      // shooting: left click or 'k' key
+      const shooting = mouse.down || keys['k'];
+      if(shooting && player.fireCooldown<=0){ bullets.push({x:player.x,y:player.y,dx:Math.cos(aimAngle)*520,dy:Math.sin(aimAngle)*520,owner:'player',r:4}); player.fireCooldown= (player.weapon && WEAPONS[player.weapon])? (1/WEAPONS[player.weapon].fireRate) : 0.5; }
       player.fireCooldown = Math.max(0, player.fireCooldown - dt);
     }
 
@@ -117,16 +155,26 @@ function update(dt){
 
     // Enemies behavior
     for(let i=enemies.length-1;i>=0;i--){const e=enemies[i]; if(!e.alive) continue; const dx=player.x-e.x, dy=player.y-e.y; const dist=Math.hypot(dx,dy);
-      // move towards player if far
-      if(dist>160){ e.x += (dx/dist)*e.spd*dt; e.y += (dy/dist)*e.spd*dt }
-      // fire occasionally
-      e.fireCooldown -= dt; if(e.fireCooldown<=0 && dist<420){ const ang=Math.atan2(player.y-e.y, player.x-e.x); bullets.push({x:e.x,y:e.y,dx:Math.cos(ang)*300,dy:Math.sin(ang)*300,owner:'enemy',r:4}); e.fireCooldown = 1.2 + Math.random()*1.6 }
+      // simple AI: approach, strafe, or retreat based on hp
+      if(dist>220){ e.x += (dx/dist)*e.spd*dt; e.y += (dy/dist)*e.spd*dt }
+      else if(dist<120){ // too close -> strafe away
+        const ang = Math.atan2(dy,dx)+Math.PI/2; e.x += Math.cos(ang)*e.spd*0.8*dt; e.y += Math.sin(ang)*e.spd*0.8*dt;
+      }
+      // fire when in range
+      e.fireCooldown -= dt; if(e.fireCooldown<=0 && dist<420){ const ang=Math.atan2(player.y-e.y, player.x-e.x); bullets.push({x:e.x,y:e.y,dx:Math.cos(ang)*320,dy:Math.sin(ang)*320,owner:'enemy',r:4}); e.fireCooldown = 0.9 + Math.random()*1.6 }
       // hit by player bullets
       for(let j=bullets.length-1;j>=0;j--){const b=bullets[j]; if(b.owner==='player'){const dd=(b.x-e.x)*(b.x-e.x)+(b.y-e.y)*(b.y-e.y); if(dd < (b.r+e.r)*(b.r+e.r)){e.hp-=40; bullets.splice(j,1); if(e.hp<=0){e.alive=false; enemies.splice(i,1); killFeed.unshift({text:'You eliminated an enemy',time:nowMs}); if(killFeed.length>6) killFeed.pop(); break}}}}
     }
 
     // bullets hitting player
-    for(let i=bullets.length-1;i>=0;i--){const b=bullets[i]; if(b.owner==='enemy'){const dx=b.x-player.x, dy=b.y-player.y; if(dx*dx+dy*dy < (b.r+player.r)*(b.r+player.r)){player.hp-=18; bullets.splice(i,1); if(player.hp<=0){state='gameOver'; statusEl.textContent='You Died'; promptEl.classList.remove('hidden'); promptEl.textContent='Refresh to retry';}}}}
+    for(let i=bullets.length-1;i>=0;i--){const b=bullets[i]; if(b.owner==='enemy'){const dx=b.x-player.x, dy=b.y-player.y; if(dx*dx+dy*dy < (b.r+player.r)*(b.r+player.r)){
+        // apply to shield first
+        let dmg = 18;
+        if(player.shield>0){ const s = Math.min(player.shield, dmg); player.shield -= s; dmg -= s; }
+        if(dmg>0) player.hp -= dmg;
+        bullets.splice(i,1);
+        if(player.hp<=0){state='gameOver'; statusEl.textContent='You Died'; promptEl.classList.remove('hidden'); promptEl.textContent='Refresh to retry';}
+      }}}
 
     // loot pickup
     for(let i=loot.length-1;i>=0;i--){const L=loot[i]; const d=(L.x-player.x)*(L.x-player.x)+(L.y-player.y)*(L.y-player.y); if(d<900){loot.splice(i,1); player.ammo += 12}}
@@ -147,6 +195,18 @@ function update(dt){
 function drawBus(ctx,b){ ctx.fillStyle=b.color; roundRect(ctx,b.x,b.y,b.w,b.h,12); ctx.fill(); ctx.fillStyle='#a7d0ff'; for(let i=0;i<4;i++) ctx.fillRect(b.x+22+i*60,b.y+22,40,26); ctx.fillStyle='#111'; ctx.beginPath(); ctx.arc(b.x+50,b.y+b.h,14,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(b.x+b.w-50,b.y+b.h,14,0,Math.PI*2); ctx.fill(); }
 
 function draw(){ ctx.clearRect(0,0,canvas.width,canvas.height);
+  // Camera transform and world drawing
+  // smooth zoom toward targetZoom
+  targetZoom = (player && player.aiming) ? 1.6 : 1.0;
+  zoom += (targetZoom - zoom) * Math.min(12* (1/60), 12* (Math.max(0.001, (1/60))));
+  // Center camera on player or center if none
+  const camX = player? player.x : canvas.width/2;
+  const camY = player? player.y : canvas.height/2;
+  ctx.save();
+  ctx.translate(canvas.width/2, canvas.height/2);
+  ctx.scale(zoom, zoom);
+  ctx.translate(-camX, -camY);
+
   // sky
   const g = ctx.createLinearGradient(0,0,0,canvas.height); g.addColorStop(0,'#87ceeb'); g.addColorStop(1,'#7aa7d9'); ctx.fillStyle=g; ctx.fillRect(0,0,canvas.width,canvas.height);
   // clouds
@@ -181,6 +241,8 @@ function draw(){ ctx.clearRect(0,0,canvas.width,canvas.height);
 
   // draw loot
   for(const L of loot){ ctx.fillStyle='#f4d35e'; ctx.beginPath(); ctx.rect(L.x-6,L.y-6,12,12); ctx.fill(); }
+
+  ctx.restore();
 
   // HUD - top-left minimap
   const mmW = 160, mmH = 112; ctx.save(); ctx.globalAlpha = 0.95; ctx.fillStyle='rgba(8,12,18,0.6)'; roundRect(ctx,12,12,mmW,mmH,8); ctx.fill();
