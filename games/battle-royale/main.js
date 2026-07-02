@@ -36,6 +36,10 @@ const loot = [];
 // Safe zone
 const safe = {x:canvas.width/2,y:canvas.height/2,r:Math.min(canvas.width,canvas.height)*0.45,shrinkTime:30,shrinkStart:performance.now()+20000,shrinkRate:0.6};
 
+// Match timing and UI
+let matchStart = null;
+const killFeed = [];
+
 // Input
 const keys = {}; window.addEventListener('keydown',e=>keys[e.key.toLowerCase()]=true); window.addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
 const mouse = {x:0,y:0,down:false};
@@ -118,7 +122,7 @@ function update(dt){
       // fire occasionally
       e.fireCooldown -= dt; if(e.fireCooldown<=0 && dist<420){ const ang=Math.atan2(player.y-e.y, player.x-e.x); bullets.push({x:e.x,y:e.y,dx:Math.cos(ang)*300,dy:Math.sin(ang)*300,owner:'enemy',r:4}); e.fireCooldown = 1.2 + Math.random()*1.6 }
       // hit by player bullets
-      for(let j=bullets.length-1;j>=0;j--){const b=bullets[j]; if(b.owner==='player'){const dd=(b.x-e.x)*(b.x-e.x)+(b.y-e.y)*(b.y-e.y); if(dd < (b.r+e.r)*(b.r+e.r)){e.hp-=40; bullets.splice(j,1); if(e.hp<=0){e.alive=false; enemies.splice(i,1); break}}}}
+      for(let j=bullets.length-1;j>=0;j--){const b=bullets[j]; if(b.owner==='player'){const dd=(b.x-e.x)*(b.x-e.x)+(b.y-e.y)*(b.y-e.y); if(dd < (b.r+e.r)*(b.r+e.r)){e.hp-=40; bullets.splice(j,1); if(e.hp<=0){e.alive=false; enemies.splice(i,1); killFeed.unshift({text:'You eliminated an enemy',time:nowMs}); if(killFeed.length>6) killFeed.pop(); break}}}}
     }
 
     // bullets hitting player
@@ -126,6 +130,9 @@ function update(dt){
 
     // loot pickup
     for(let i=loot.length-1;i>=0;i--){const L=loot[i]; const d=(L.x-player.x)*(L.x-player.x)+(L.y-player.y)*(L.y-player.y); if(d<900){loot.splice(i,1); player.ammo += 12}}
+
+    // kill feed aging
+    for(let i=killFeed.length-1;i>=0;i--){ if(nowMs - killFeed[i].time > 6000) killFeed.splice(i,1); }
 
     // Safe zone shrink
     if(nowMs > safe.shrinkStart){ safe.r = Math.max(60, safe.r - safe.shrinkRate*dt); }
@@ -175,9 +182,42 @@ function draw(){ ctx.clearRect(0,0,canvas.width,canvas.height);
   // draw loot
   for(const L of loot){ ctx.fillStyle='#f4d35e'; ctx.beginPath(); ctx.rect(L.x-6,L.y-6,12,12); ctx.fill(); }
 
-  // HUD
-  ctx.fillStyle='rgba(0,0,0,0.35)'; ctx.fillRect(12,12,240,86);
-  if(player){ ctx.fillStyle='#fff'; ctx.font='16px Segoe UI'; const weaponName = player.weapon? WEAPONS[player.weapon].name : 'Fists'; const ammoText = player.weapon? `${player.ammo}` : '-'; ctx.fillText(`HP: ${Math.round(player.hp)}  ${weaponName} Ammo: ${ammoText}`,22,36); ctx.fillText(`Enemies: ${enemies.length}`,22,60); ctx.fillText(`Safe r: ${Math.round(safe.r)}`,22,82); }
+  // HUD - top-left minimap
+  const mmW = 160, mmH = 112; ctx.save(); ctx.globalAlpha = 0.95; ctx.fillStyle='rgba(8,12,18,0.6)'; roundRect(ctx,12,12,mmW,mmH,8); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.font='12px Segoe UI'; ctx.fillText('Minimap',26,30);
+  // map dot for player
+  if(player){ const mx = 26 + (player.x / canvas.width) * (mmW-36); const my = 36 + (player.y / groundY()) * (mmH-48); ctx.fillStyle='#ffd166'; ctx.beginPath(); ctx.arc(mx,my,5,0,Math.PI*2); ctx.fill(); }
+  ctx.restore();
+
+  // top-center: match timer and players left
+  const headerY = 18; ctx.fillStyle='rgba(0,0,0,0.25)'; roundRect(ctx, canvas.width/2 - 160, headerY, 320, 36, 8); ctx.fill(); ctx.fillStyle='#fff'; ctx.font='14px Segoe UI';
+  const elapsed = matchStart ? Math.floor((nowMs - matchStart)/1000) : 0; const timerText = `Match: ${Math.floor(elapsed/60)}:${String(elapsed%60).padStart(2,'0')}`;
+  ctx.fillText(timerText, canvas.width/2 - 120, headerY + 22);
+  ctx.fillText(`Players: ${enemies.length + (player?1:0)}`, canvas.width/2 + 10, headerY + 22);
+
+  // top-right: kill feed
+  const kx = canvas.width - 220, ky = 16; ctx.fillStyle='rgba(0,0,0,0.18)'; roundRect(ctx,kx,ky,208,120,8); ctx.fill(); ctx.fillStyle='#fff'; ctx.font='13px Segoe UI'; ctx.fillText('Kill Feed', kx+12, ky+20);
+  for(let i=0;i<killFeed.length;i++){ ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.fillText(killFeed[i].text, kx+12, ky+40 + i*16); }
+
+  // bottom-left: Health and shield
+  if(player){ const hbX = 20, hbY = canvas.height - 110; ctx.fillStyle='rgba(0,0,0,0.45)'; roundRect(ctx,hbX,hbY,220,72,10); ctx.fill(); ctx.fillStyle='#fff'; ctx.font='13px Segoe UI'; ctx.fillText('You', hbX+12, hbY+20);
+    // draw portrait
+    ctx.drawImage(playerImg, hbX+12, hbY+26, 44, 44);
+    // health bar
+    const healthW = 140; ctx.fillStyle='#222'; roundRect(ctx,hbX+66,hbY+22,healthW,12,6); ctx.fill(); ctx.fillStyle='#ff6b6b'; roundRect(ctx,hbX+66,hbY+22, Math.max(0,(player.hp/100))*healthW,12,6); ctx.fill(); ctx.fillStyle='#fff'; ctx.fillText(`${Math.round(player.hp)} HP`, hbX+66, hbY+34);
+    // shield bar
+    ctx.fillStyle='#222'; roundRect(ctx,hbX+66,hbY+40,healthW,10,6); ctx.fill(); ctx.fillStyle='#4cc9f0'; roundRect(ctx,hbX+66,hbY+40, Math.max(0,(player.shield/100))*healthW,10,6); ctx.fill(); ctx.fillStyle='#fff'; ctx.fillText(`${Math.round(player.shield)} Shield`, hbX+66, hbY+50);
+  }
+
+  // bottom-center: weapon hotbar
+  const hbW = 420, hbH = 64; const hbXc = canvas.width/2 - hbW/2, hbYc = canvas.height - hbH - 18; ctx.fillStyle='rgba(0,0,0,0.45)'; roundRect(ctx,hbXc,hbYc,hbW,hbH,12); ctx.fill();
+  // slots
+  const slots = 5; const slotW = 72; for(let s=0;s<slots;s++){ const sx = hbXc + 12 + s*(slotW+6); ctx.fillStyle='rgba(255,255,255,0.04)'; roundRect(ctx,sx,hbYc+8,slotW,48,8); ctx.fill(); if(player && s===0 && player.weapon){ // show equipped
+      ctx.strokeStyle='#ffd166'; ctx.lineWidth=2; roundRect(ctx,sx,hbYc+8,slotW,48,8); ctx.stroke(); ctx.fillStyle='#fff'; ctx.font='12px Segoe UI'; ctx.fillText(WEAPONS[player.weapon].name, sx+8, hbYc+30); ctx.fillText(`Ammo: ${player.ammo}`, sx+8, hbYc+44);
+    } }
+
+  // bottom-right: small info
+  const brX = canvas.width - 180, brY = canvas.height - 110; ctx.fillStyle='rgba(0,0,0,0.35)'; roundRect(ctx,brX,brY,160,80,8); ctx.fill(); ctx.fillStyle='#fff'; ctx.font='13px Segoe UI'; ctx.fillText('Storm in: 0:30', brX+12, brY+26); ctx.fillText('Ping: 42ms', brX+12, brY+46);
 
   if(state==='gameOver'){ ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#fff'; ctx.font='44px Segoe UI'; ctx.fillText(statusEl.textContent, canvas.width/2-120, canvas.height/2); }
 }
@@ -189,8 +229,9 @@ let last = performance.now(); function loop(t){ const dt=(t-last)/1000; last=t; 
 window.addEventListener('keydown', e=>{
   if(e.code==='Space' && state==='readyToJump'){
     // create player at bus position and set initial jump velocity
-    player = {x: bus.x + bus.w/2, y: bus.y+bus.h+6, vx: (Math.random()-0.5)*60, vy: -60, r:12, h:36, hp:100, ammo:30, speed:160, fireCooldown:0, parachute:false, jumpTime:performance.now()};
+    player = {x: bus.x + bus.w/2, y: bus.y+bus.h+6, vx: (Math.random()-0.5)*60, vy: -60, r:12, h:36, hp:100, shield:50, ammo:30, weapon:'pistol', speed:160, fireCooldown:0, parachute:false, jumpTime:performance.now()};
     state = 'inAir'; statusEl.textContent = 'In Air'; promptEl.classList.add('hidden');
+    matchStart = performance.now();
   }
 });
 
